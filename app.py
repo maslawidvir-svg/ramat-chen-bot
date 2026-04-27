@@ -1,100 +1,106 @@
 import os
+import json
 import datetime
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
 import anthropic
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
 
 app = Flask(__name__)
 client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
 
-SYSTEM_PROMPT = """אתה סוכן AI מקצועי של בית כנסת רמת חן ברמת גן.
-שמך: "עוזר בית הכנסת רמת חן"
-אתה עונה בעברית בלבד, בטון חם, ידידותי ומקצועי.
-תמיד תהיה קצר וממוקד - עד 6 שורות לכל היותר.
-אתה מבין עברית מדוברת, שפה יומיומית, קיצורים וכתיב לא מדויק.
+CALENDAR_ID = "maslawi18@gmail.com"
 
-═══════════════════════════════
-פרטי בית הכנסת
-═══════════════════════════════
-שם: בית כנסת רמת חן
+def get_calendar_service():
+    try:
+        creds_path = "/etc/secrets/GOOGLE_CREDENTIALS"
+        creds = service_account.Credentials.from_service_account_file(
+            creds_path,
+            scopes=["https://www.googleapis.com/auth/calendar.readonly"]
+        )
+        return build("calendar", "v3", credentials=creds)
+    except Exception as e:
+        print(f"Calendar error: {e}")
+        return None
+
+def get_upcoming_events(days=60):
+    service = get_calendar_service()
+    if not service:
+        return None
+    try:
+        now = datetime.datetime.utcnow()
+        end = now + datetime.timedelta(days=days)
+        events_result = service.events().list(
+            calendarId=CALENDAR_ID,
+            timeMin=now.isoformat() + "Z",
+            timeMax=end.isoformat() + "Z",
+            maxResults=30,
+            singleEvents=True,
+            orderBy="startTime"
+        ).execute()
+        return events_result.get("items", [])
+    except Exception as e:
+        print(f"Events error: {e}")
+        return None
+
+def format_events_for_prompt():
+    events = get_upcoming_events()
+    if events is None:
+        return "לא הצלחתי לגשת ליומן כרגע."
+    if not events:
+        return "אין אירועים קרובים ביומן."
+    lines = []
+    for e in events:
+        title = e.get("summary", "אירוע")
+        start = e.get("start", {})
+        date = start.get("date") or start.get("dateTime", "")[:10]
+        lines.append(f"- {date}: {title}")
+    return "\n".join(lines)
+
+SYSTEM_PROMPT = """אתה יונתן, מנהלן בית כנסת רמת חן ברמת גן.
+אתה עונה להודעות וואטסאפ בשם בית הכנסת.
+הסגנון שלך: קצר, חם, טבעי - כמו בן אדם שעונה בוואטסאפ. לא רשמי מדי.
+אל תפתח עם "שלום" בכל הודעה - תגיב כמו שאנשים מדברים בוואטסאפ.
+אם אתה לא יודע משהו - תגיד בכנות ותפנה ליונתן האמיתי: 050-5500457.
+
+פרטי בית הכנסת:
 כתובת: רמת חן 5, רמת גן
-טלפון: 03-5744026
-נייד: 050-5500457
+טלפון: 03-5744026 | 050-5500457
 מייל: bh.ramat.chen@gmail.com
 אתר: www.bhrc.org.il
-מנהלן: יונתן (זמין בנייד 050-5500457)
 
-═══════════════════════════════
-זמני תפילה
-═══════════════════════════════
+זמני תפילה:
 שחרית חול: 06:30
 שחרית שבת: מניין א' 06:45 | מניין ב' 08:00
-קבלת שבת (ערב שבת): 10 דקות אחרי כניסת שבת
-מנחה שבת (צהריים): 13:00 בקיץ | 13:30 בחורף
-מנחה שבת (ערב): דקה אחת לפני צאת שבת
-מנחה חול: רבע שעה לפני השקיעה (משתנה לפי תאריך)
-ערבית חול: מיד בסיום מנחה
-הוצאת ספר תורה: ימי שני וחמישי בלבד, בשחרית
+קבלת שבת: 10 דקות אחרי כניסת שבת
+מנחה שבת (צהריים): 13:00 קיץ | 13:30 חורף
+מנחה שבת (ערב): דקה לפני צאת שבת
+מנחה חול: רבע שעה לפני השקיעה
+ערבית: בסיום מנחה
+ספר תורה: שני וחמישי בשחרית
+לזמנים מדויקים: אפליקציה "בית הכנסת שלי", קוד 275332
 
-לזמנים מדויקים ומעודכנים יומית:
-אפליקציה: "בית הכנסת שלי" | קוד בית הכנסת: 275332
+אולם היכל ריבה:
+לחבר קהילה:
+- חול: 600 ש"ח (אולם) | 1,000 ש"ח (היכל ריבה)
+- שבת לכלל המתפללים: חינם
+- קידוש פרטי שבת: 600 ש"ח | 1,000 ש"ח
+- ארוחות פרטיות שבת: 1,500 ש"ח (היכל ריבה בלבד)
+לא חבר:
+- חול: 1,800 ש"ח | 4,000 ש"ח
+- שבת לכלל: 1,800 ש"ח (אולם בלבד)
+בר מצווה שני אולמות: 4,500 ש"ח
+שיק ביטחון: 1,500 ש"ח
+סיום: 22:30 | פינוי: 23:00
+כשרות אורתודוקסית בלבד
 
-═══════════════════════════════
-אולם "היכל ריבה" - השכרה לאירועים
-═══════════════════════════════
-האולם משמש כבית כנסת ומיועד לאירועים קהילתיים בלבד.
-סוגי אירועים מאושרים: קידושים, סעודות שבת, בריתות, שבע ברכות, אזכרות.
-אין אישור לאירועים רועשים או עם הגברה.
-סיום אירוע: עד 22:30 | פינוי ומסירת מפתחות: עד 23:00
-כשרות: אורתודוקסית בלבד (נדרשת תעודת כשרות לקייטרינג)
+תרומות - העברה בנקאית:
+בנק דיסקונט 11 | סניף מרום נוה 96
+אגודת בית הכנסת רמת חן | חשבון 127415183
 
-תעריפים - לחבר קהילה משלם דמי חבר:
-- אירוע ביום חול:
-  - אולם בית הכנסת: 600 ש"ח
-  - היכל ריבה: 1,000 ש"ח
-- אירוע שבת לכלל מתפללי בית הכנסת: ללא תשלום
-- קידוש פרטי בשבת:
-  - אולם בית הכנסת: 600 ש"ח
-  - היכל ריבה: 1,000 ש"ח
-- ארוחות פרטיות בשבת (ערב וצהריים):
-  - אולם בית הכנסת: לא רלוונטי
-  - היכל ריבה: 1,500 ש"ח
-
-תעריפים - למי שאינו משלם דמי חבר:
-- אירוע ביום חול:
-  - אולם בית הכנסת: 1,800 ש"ח
-  - היכל ריבה: 4,000 ש"ח
-- אירוע שבת לכלל המתפללים:
-  - אולם בית הכנסת: 1,800 ש"ח
-  - היכל ריבה: לא אפשרי
-- קידוש פרטי / ארוחות פרטיות בשבת: לא אפשרי
-
-בר/בת מצווה - שני האולמות יחד: 4,500 ש"ח
-שיק ביטחון: 1,500 ש"ח (מוחזר לאחר האירוע אם אין נזקים)
-
-לתיאום ובדיקת זמינות: יונתן 050-5500457
-
-═══════════════════════════════
-תרומות
-═══════════════════════════════
-תרומות מתקבלות בהעברה בנקאית:
-בנק: דיסקונט | מספר בנק: 11
-סניף: מרום נוה | מספר סניף: 96
-שם חשבון: אגודת בית הכנסת רמת חן
-מספר חשבון: 127415183
-
-כל תרומה מסייעת לקיום הפעילות הקהילתית!
-לפרטים נוספים: יונתן 050-5500457
-
-═══════════════════════════════
-כללי התנהגות לתגובות
-═══════════════════════════════
-1. תמיד עברית, תמיד חם וקצר
-2. אם שואלים על תאריך פנוי - אמור שיש לפנות ליונתן ב-050-5500457 לבדיקת זמינות
-3. אם שואלים משהו שלא קשור ל-4 הנושאים - הפנה ליונתן
-4. כשמישהו מדווח תקלה - אחרי שאספת תיאור ומיקום, הוסף [TICKET] בסוף התגובה
-5. היה אמפתי ומכיל - אנשים פונים לבית כנסת גם ברגעים רגשיים
-6. אם מישהו שואל "מה אתה יכול לעשות" - הסבר את 4 הנושאים בצורה ידידותית"""
+כשמישהו מדווח תקלה - תגיד שרשמת ותטפל. הוסף [TICKET] בסוף.
+שאלות שלא קשורות - הפנה ל-050-5500457"""
 
 conversation_history = {}
 
@@ -106,53 +112,56 @@ def webhook():
     if not incoming_msg:
         return str(MessagingResponse())
 
-    # אתחול היסטוריה למשתמש חדש
     if sender not in conversation_history:
         conversation_history[sender] = []
 
-    # הוספת הודעת המשתמש
     conversation_history[sender].append({
         "role": "user",
         "content": incoming_msg
     })
 
-    # שמירה על 20 הודעות אחרונות בלבד
     if len(conversation_history[sender]) > 20:
         conversation_history[sender] = conversation_history[sender][-20:]
+
+    # בדיקה אם השאלה קשורה לתאריכים פנויים
+    calendar_keywords = ["פנוי", "תאריך", "זמין", "אפשר להזמין", "מתי אפשר", "האולם פנוי", "לבדוק"]
+    needs_calendar = any(k in incoming_msg for k in calendar_keywords)
+
+    system = SYSTEM_PROMPT
+    if needs_calendar:
+        events_text = format_events_for_prompt()
+        system += f"\n\nאירועים קרובים ביומן (תאריכים תפוסים):\n{events_text}"
 
     try:
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
-            max_tokens=600,
-            system=SYSTEM_PROMPT,
+            max_tokens=400,
+            system=system,
             messages=conversation_history[sender]
         )
 
         reply = response.content[0].text.strip()
 
-        # בדיקת תקלה לרישום
         if "[TICKET]" in reply:
             reply = reply.replace("[TICKET]", "").strip()
-            log_maintenance_ticket(sender, incoming_msg)
+            log_ticket(sender, incoming_msg)
 
-        # שמירת תגובת הבוט בהיסטוריה
         conversation_history[sender].append({
             "role": "assistant",
             "content": reply
         })
 
     except Exception as e:
-        reply = "מצטערים, יש תקלה זמנית 🙏\nאנא נסה שוב בעוד מספר דקות או צור קשר עם יונתן: 050-5500457"
+        reply = "סורי, יש תקלה קטנה כרגע. נסה שוב בעוד דקה או התקשר ל-050-5500457"
         print(f"Error: {e}")
 
     resp = MessagingResponse()
     resp.message(reply)
     return str(resp)
 
-def log_maintenance_ticket(sender, description):
+def log_ticket(sender, description):
     now = datetime.datetime.now().strftime("%d/%m/%Y %H:%M")
-    print(f"[תקלה] {now} | מספר: {sender} | תיאור: {description}")
-    # TODO: חיבור לגוגל שייט בהמשך
+    print(f"[תקלה] {now} | {sender} | {description}")
 
 @app.route("/", methods=["GET"])
 def home():
