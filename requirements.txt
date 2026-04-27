@@ -2,3 +2,5 @@ flask
 twilio
 anthropic
 gunicorn
+google-auth
+google-api-python-client
