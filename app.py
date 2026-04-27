@@ -1,11 +1,12 @@
 import os
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
-import anthropic
+import google.generativeai as genai
 
 app = Flask(__name__)
 
-client = anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY"))
+genai.configure(api_key=os.environ.get("GEMINI_API_KEY"))
+model = genai.GenerativeModel("gemini-1.5-flash")
 
 SYSTEM_PROMPT = """אתה סוכן AI של בית כנסת רמת חן ברמת גן. אתה עונה בעברית בלבד.
 הטון שלך: מקצועי, ידידותי, חברותי, חם וקצר. אל תהיה פורמלי מדי.
@@ -29,7 +30,7 @@ SYSTEM_PROMPT = """אתה סוכן AI של בית כנסת רמת חן ברמת 
 הוצאת ספר תורה: ימי שני וחמישי בלבד, שחרית
 לזמנים מדויקים: אפליקציה "בית הכנסת שלי", קוד: 275332
 
-אולם "היכל ריבה" - תעריפי השכרה:
+אולם היכל ריבה - תעריפי השכרה:
 לחבר קהילה המשלם דמי חבר:
 - אירוע ביום חול: 600 ש"ח (אולם בית הכנסת) | 1,000 ש"ח (היכל ריבה)
 - אירוע שבת לכלל המתפללים: ללא תשלום
@@ -69,28 +70,27 @@ conversation_history = {}
 def webhook():
     incoming_msg = request.values.get("Body", "").strip()
     sender = request.values.get("From", "")
+
     if not incoming_msg:
         return str(MessagingResponse())
+
     if sender not in conversation_history:
-        conversation_history[sender] = []
-    conversation_history[sender].append({"role": "user", "content": incoming_msg})
-    if len(conversation_history[sender]) > 10:
-        conversation_history[sender] = conversation_history[sender][-10:]
+        conversation_history[sender] = model.start_chat(history=[])
+
     try:
-        response = client.messages.create(
-            model="claude-haiku-4-5-20251001",
-            max_tokens=500,
-            system=SYSTEM_PROMPT,
-            messages=conversation_history[sender]
-        )
-        reply = response.content[0].text
+        full_msg = f"{SYSTEM_PROMPT}\n\nהודעת המשתמש: {incoming_msg}"
+        chat = conversation_history[sender]
+        response = chat.send_message(full_msg if len(chat.history) == 0 else incoming_msg)
+        reply = response.text
+
         if "[TICKET]" in reply:
             reply = reply.replace("[TICKET]", "").strip()
             log_maintenance_ticket(sender, incoming_msg)
-        conversation_history[sender].append({"role": "assistant", "content": reply})
+
     except Exception as e:
-        reply = "מצטערים, יש תקלה זמנית. אנא נסה שוב או צור קשר עם יונתן במספר 050-5500457 🙏"
+        reply = "מצטערים, יש תקלה זמנית. אנא נסה שוב או צור קשר עם יונתן במספר 050-5500457"
         print(f"Error: {e}")
+
     resp = MessagingResponse()
     resp.message(reply)
     return str(resp)
@@ -102,7 +102,7 @@ def log_maintenance_ticket(sender, description):
 
 @app.route("/", methods=["GET"])
 def home():
-    return "בוט בית כנסת רמת חן פעיל ✅"
+    return "בוט בית כנסת רמת חן פעיל"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
