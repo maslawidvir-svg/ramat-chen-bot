@@ -1,5 +1,4 @@
 import os
-import json
 import datetime
 from flask import Flask, request
 from twilio.twiml.messaging_response import MessagingResponse
@@ -14,9 +13,8 @@ CALENDAR_ID = "maslawi18@gmail.com"
 
 def get_calendar_service():
     try:
-        creds_path = "/etc/secrets/GOOGLE_CREDENTIALS"
         creds = service_account.Credentials.from_service_account_file(
-            creds_path,
+            "/etc/secrets/GOOGLE_CREDENTIALS",
             scopes=["https://www.googleapis.com/auth/calendar.readonly"]
         )
         return build("calendar", "v3", credentials=creds)
@@ -24,85 +22,94 @@ def get_calendar_service():
         print(f"Calendar error: {e}")
         return None
 
-def get_upcoming_events(days=60):
+def get_upcoming_events():
     service = get_calendar_service()
     if not service:
-        return None
+        return "לא הצלחתי לגשת ליומן."
     try:
         now = datetime.datetime.utcnow()
-        end = now + datetime.timedelta(days=days)
-        events_result = service.events().list(
+        end = now + datetime.timedelta(days=90)
+        result = service.events().list(
             calendarId=CALENDAR_ID,
             timeMin=now.isoformat() + "Z",
             timeMax=end.isoformat() + "Z",
-            maxResults=30,
+            maxResults=50,
             singleEvents=True,
             orderBy="startTime"
         ).execute()
-        return events_result.get("items", [])
+        events = result.get("items", [])
+        if not events:
+            return "אין אירועים קרובים ביומן."
+        lines = []
+        for e in events:
+            title = e.get("summary", "אירוע")
+            start = e.get("start", {})
+            date = start.get("date") or start.get("dateTime", "")[:10]
+            lines.append(f"- {date}: {title}")
+        return "\n".join(lines)
     except Exception as e:
         print(f"Events error: {e}")
-        return None
+        return "שגיאה בגישה ליומן."
 
-def format_events_for_prompt():
-    events = get_upcoming_events()
-    if events is None:
-        return "לא הצלחתי לגשת ליומן כרגע."
-    if not events:
-        return "אין אירועים קרובים ביומן."
-    lines = []
-    for e in events:
-        title = e.get("summary", "אירוע")
-        start = e.get("start", {})
-        date = start.get("date") or start.get("dateTime", "")[:10]
-        lines.append(f"- {date}: {title}")
-    return "\n".join(lines)
+SYSTEM_PROMPT = """אתה עונה בשם בית כנסת רמת חן ברמת גן בוואטסאפ.
 
-SYSTEM_PROMPT = """אתה יונתן, מנהלן בית כנסת רמת חן ברמת גן.
-אתה עונה להודעות וואטסאפ בשם בית הכנסת.
-הסגנון שלך: קצר, חם, טבעי - כמו בן אדם שעונה בוואטסאפ. לא רשמי מדי.
-אל תפתח עם "שלום" בכל הודעה - תגיב כמו שאנשים מדברים בוואטסאפ.
-אם אתה לא יודע משהו - תגיד בכנות ותפנה ליונתן האמיתי: 050-5500457.
+חשוב מאוד: כתוב כמו בן אדם אמיתי שעונה בוואטסאפ.
+- משפטים קצרים וטבעיים
+- אין bold, אין כותרות, אין תבניות
+- אימוג'י אחד לכל היותר אם מתאים
+- אל תחזור על "שלום" בכל הודעה
+- תגיב בצורה חמה אבל ישירה
 
 פרטי בית הכנסת:
 כתובת: רמת חן 5, רמת גן
 טלפון: 03-5744026 | 050-5500457
 מייל: bh.ramat.chen@gmail.com
 אתר: www.bhrc.org.il
+מנהלן: יונתן - 050-5500457
 
 זמני תפילה:
 שחרית חול: 06:30
-שחרית שבת: מניין א' 06:45 | מניין ב' 08:00
+שחרית שבת: מניין א 06:45 | מניין ב 08:00
 קבלת שבת: 10 דקות אחרי כניסת שבת
-מנחה שבת (צהריים): 13:00 קיץ | 13:30 חורף
-מנחה שבת (ערב): דקה לפני צאת שבת
+מנחה שבת צהריים: 13:00 קיץ | 13:30 חורף
+מנחה שבת ערב: דקה לפני צאת שבת
 מנחה חול: רבע שעה לפני השקיעה
 ערבית: בסיום מנחה
 ספר תורה: שני וחמישי בשחרית
-לזמנים מדויקים: אפליקציה "בית הכנסת שלי", קוד 275332
+לזמנים מדויקים: אפליקציה "בית הכנסת שלי" קוד 275332
 
-אולם היכל ריבה:
-לחבר קהילה:
-- חול: 600 ש"ח (אולם) | 1,000 ש"ח (היכל ריבה)
+תעריפי אולם לחבר קהילה:
+- חול: 600 שח אולם | 1000 שח היכל ריבה
 - שבת לכלל המתפללים: חינם
-- קידוש פרטי שבת: 600 ש"ח | 1,000 ש"ח
-- ארוחות פרטיות שבת: 1,500 ש"ח (היכל ריבה בלבד)
-לא חבר:
-- חול: 1,800 ש"ח | 4,000 ש"ח
-- שבת לכלל: 1,800 ש"ח (אולם בלבד)
-בר מצווה שני אולמות: 4,500 ש"ח
-שיק ביטחון: 1,500 ש"ח
-סיום: 22:30 | פינוי: 23:00
+- קידוש פרטי שבת: 600 שח | 1000 שח היכל ריבה
+- ארוחות פרטיות שבת: 1500 שח היכל ריבה בלבד
+
+תעריפי אולם לא חבר:
+- חול: 1800 שח אולם | 4000 שח היכל ריבה
+- שבת לכלל: 1800 שח אולם בלבד
+- קידוש פרטי שבת: לא אפשרי
+
+בר מצווה שני אולמות: 4500 שח
+שיק ביטחון: 1500 שח
+סיום אירוע: 22:30 | פינוי: 23:00
 כשרות אורתודוקסית בלבד
 
 תרומות - העברה בנקאית:
 בנק דיסקונט 11 | סניף מרום נוה 96
 אגודת בית הכנסת רמת חן | חשבון 127415183
 
-כשמישהו מדווח תקלה - תגיד שרשמת ותטפל. הוסף [TICKET] בסוף.
-שאלות שלא קשורות - הפנה ל-050-5500457"""
+כשמישהו מדווח תקלה - תגיד שרשמת ותטפל בהקדם. הוסף [TICKET] בסוף התגובה.
+שאלות שלא קשורות - הפנה בחום ל-050-5500457"""
 
 conversation_history = {}
+
+def needs_calendar_check(msg):
+    check = client.messages.create(
+        model="claude-haiku-4-5-20251001",
+        max_tokens=5,
+        messages=[{"role": "user", "content": f"האם ההודעה הבאה עוסקת בתאריכים, זמינות מקום, הזמנת אולם, או בדיקת לוח זמנים? ענה רק כן או לא:\n{msg}"}]
+    )
+    return "כן" in check.content[0].text
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
@@ -123,16 +130,12 @@ def webhook():
     if len(conversation_history[sender]) > 20:
         conversation_history[sender] = conversation_history[sender][-20:]
 
-    # בדיקה אם השאלה קשורה לתאריכים פנויים
-    calendar_keywords = ["פנוי", "תאריך", "זמין", "אפשר להזמין", "מתי אפשר", "האולם פנוי", "לבדוק"]
-    needs_calendar = any(k in incoming_msg for k in calendar_keywords)
-
-    system = SYSTEM_PROMPT
-    if needs_calendar:
-        events_text = format_events_for_prompt()
-        system += f"\n\nאירועים קרובים ביומן (תאריכים תפוסים):\n{events_text}"
-
     try:
+        system = SYSTEM_PROMPT
+        if needs_calendar_check(incoming_msg):
+            events = get_upcoming_events()
+            system += f"\n\nאירועים קרובים ביומן (תאריכים תפוסים):\n{events}"
+
         response = client.messages.create(
             model="claude-haiku-4-5-20251001",
             max_tokens=400,
@@ -152,7 +155,7 @@ def webhook():
         })
 
     except Exception as e:
-        reply = "סורי, יש תקלה קטנה כרגע. נסה שוב בעוד דקה או התקשר ל-050-5500457"
+        reply = "סורי, יש תקלה קטנה. נסה שוב או התקשר ל-050-5500457"
         print(f"Error: {e}")
 
     resp = MessagingResponse()
@@ -165,7 +168,7 @@ def log_ticket(sender, description):
 
 @app.route("/", methods=["GET"])
 def home():
-    return "בוט בית כנסת רמת חן פעיל ✅"
+    return "בוט בית כנסת רמת חן פעיל"
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
